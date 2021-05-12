@@ -1,7 +1,7 @@
 # lc_pulse_avalanche
 
 <p align="center">
-<img src="avalanche.jpg"  alt="" width = "450" />
+<img src="avalanche.png"  alt="" width = "450" />
 </p>
 
 
