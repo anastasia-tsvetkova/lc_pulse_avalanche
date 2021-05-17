@@ -1,5 +1,3 @@
-# Stern & Svensson, ApJ, 469: L109 (1996)
-
 from math import exp, log
 import inspect
 from scipy.stats import loguniform
@@ -9,26 +7,51 @@ import matplotlib.pyplot as plt
 
 
 class LC(object):
+    """
+    A class to generate gamma-ray burst light curves (GRB LCs) using a pulse avalance model ('chain reaction') 
+    proposed by Stern & Svensson, ApJ, 469: L109 (1996).
     
-    def __init__(self, mu=1.2, mu0=1, alpha=4, delta1=-0.5, delta2=0, tau_min=0.2, tau_max=26, \
-                 t_min=-10, t_max=1000, res=0.256, eff_area=3600, bg_level=10.67, verbose=False):
+    :mu: average number of baby pulses
+    :mu0: average number of spontaneous (initial) pulses
+    :alpha: delay parameter
+    :delta1: lower boundary of log-normal probability distribution of tau (time constant of baby pulse)
+    :delta2: upper boundary of log-normal probability distribution of tau
+    :tau_min: lower boundary of log-normal probability distribution of tau_0 (time constant of spontaneous pulse);
+             should be smaller than res
+    :tau_max: upper boundary of log-normal probability distribution of tau_0
+    :t_min: GRB LC start time
+    :t_max: GRB LC stop time
+    :res: GRB LC time resolution
+    :eff_area: effective area of instrument (cm2)
+    :bg_level: backgrounf level (cnt/cm2/s)
+    :min_photon_rate: left boundary of -3/2 log N - log S distrubution (ph/cm2/s)
+    :max_photon_rate: right boundary of -3/2 log N - log S distrubution (ph/cm2/s)
+    
+    """
+    
+    def __init__(self, mu=1.2, mu0=1, alpha=4, delta1=-0.5, delta2=0, tau_min=0.2, tau_max=26,
+                 t_min=-10, t_max=1000, res=0.256, eff_area=3600, bg_level=10.67, min_photon_rate=1.3,
+                 max_photon_rate=1300, verbose=False):
         
         self._mu = mu # mu~1 => critical runaway regime
         self._mu0 = mu0 # average number of spontaneous pulses per GRB
         self._alpha = alpha # delay parameter
         self._delta1 = delta1
         self._delta2 = delta2
+        if tau_min > res and not isinstance(self, Restored_LC):
+            raise ValueError("tau_min should be smaller than res =", res)
         self._tau_min = tau_min
         self._tau_max = tau_max
-        self._eff_area = eff_area
+        self._eff_area = eff_area 
         self._bg = bg_level * self._eff_area # cnts/s
-        self._photon_rate = 0.65 # ph/cm2/s
+        self._min_photon_rate = min_photon_rate  
+        self._max_photon_rate = max_photon_rate 
         self._verbose = verbose
-        self._res = res
+        self._res = res # s
         self._n = int(np.ceil((t_max - t_min)/self._res)) + 1
         self._t_min = t_min
         self._t_max = (self._n - 1) * self._res + self._t_min
-        self._times, self._step = np.linspace(t_min, self._t_max, self._n, retstep=True)
+        self._times, self._step = np.linspace(self._t_min, self._t_max, self._n, retstep=True)
         self._rates = np.zeros(len(self._times))
         self._sp_pulse = np.zeros(len(self._times))
         self._total_rates = np.zeros(len(self._times))
@@ -40,7 +63,8 @@ class LC(object):
         
     def norris_pulse(self, norm, tp, tau, tau_r):
         """
-        Norris te al., ApJ, 459, 393 (1996)
+        Computes a single pulse according to Norris te al., ApJ, 459, 393 (1996)
+        
         :t: times (lc x-axis), vector
         :tp: pulse peak time, scalar
         :tau: pulse width (decay rime), scalar
@@ -53,15 +77,22 @@ class LC(object):
 
         t = self._times 
         _tp = np.ones(len(t))*tp
+        
+        if tau_r == 0 or tau == 0: 
+            return np.zeros(len(t))
+        
         return np.append(norm * np.exp(-(t[t<=tp]-_tp[t<=tp])**2/tau_r**2), \
                          norm * np.exp(-(t[t>tp]-_tp[t>tp])/tau))
     
     
     def _rec_gen_pulse(self, tau1, t_shift):
         """
-        Recursively generating pulses from Norris function
+        Recursively generates pulses from Norris function
         
         :tau1: parent pulse width (decay rime), scalar
+        :t_shift: time delay relative to the parent pulse
+        
+        :returns: an array of count rates
         """
         
         # number of baby pulses: p2(mu_b) = exp(-mu_b/mu)/mu, mu - the average, mu_b - number of baby pulses
@@ -103,7 +134,9 @@ class LC(object):
     
     def generate_avalanche(self):
         """
-        Generating pulse avalanche
+        Generates pulse avalanche
+        
+        :returns: set of parameters for the generated avalanche
         """
         
         if self._verbose:
@@ -151,8 +184,8 @@ class LC(object):
         # lc directly from the avalanche
         self._raw_lc = self._sp_pulse + self._rates
         
-        cnt_flux_low = self._photon_rate * self._eff_area / self._raw_lc.max()
-        cnt_flux_high = 2e3 * cnt_flux_low
+        cnt_flux_low = self._min_photon_rate * self._eff_area / self._raw_lc.max()
+        cnt_flux_high = self._max_photon_rate * self._eff_area / self._raw_lc.max()
         population = np.geomspace(cnt_flux_low, cnt_flux_high, 1000)
         weights = list(map(lambda x: x**(-3/2), population))
         weights = weights / np.sum(weights)
@@ -169,28 +202,41 @@ class LC(object):
         return self._lc_params
 
     
-    def plot_lc(self, rescale=True, save=True):
+    def plot_lc(self, rescale=True, save=True, name="./plot_lc.pdf", show_duration=False):
         """
-        Plotting light curve
+        Plots GRB light curve
         
-        :rescale: to rescale the x-axis plotting only lc around T100, bool
+        :rescale: to rescale the x-axis plotting only lc around T100
+        :save: to save the plot to file
+        :name: filename (including path) to save the plot
         """
+        
         plt.xlabel('T-T0 (s)')
         plt.ylabel('Count rate (cnt/s)')
-
-        self._plt = plt.step(self._times, self._plot_lc)
+                
+        plt.step(self._times, self._plot_lc)
         
         if rescale:
             t_i = max(self._t_start - 0.3*self._t100, self._t_min)
             t_f = self._t_stop + 0.3*self._t100
             plt.xlim([t_i, t_f])
             
+        if show_duration:
+                plt.axvline(x=self._t_start, color='blue')
+                plt.axvline(x=self._t_stop, color='blue')
+                plt.axvline(x=self._t90_i, color='red')
+                plt.axvline(x=self._t90_f, color='red')
+          
         if save:
-            plt.savefig("/home/anastasia/work/Galileo/LCs/fig_report.pdf")
+            plt.savefig(name)
+        
+        plt.show()
+            
     
     def _get_lc_properties(self):
         """
-        Calculaing T90 duration
+        Calculates T90 and T100 durations along with their start and stop times, total number of counts per T100, 
+        mean, max, and background count rates
         """
         
         self._aux_times = self._times[self._raw_lc>self._raw_lc.max()*1e-4]
@@ -199,24 +245,24 @@ class LC(object):
         self._t_start = self._aux_times[0]
         self._t_stop = self._aux_times[-1]
         self._t100 = self._t_stop - self._t_start
-        self._total_cnts = np.sum(self._aux_lc)
+        self._total_cnts = np.sum(self._aux_lc) * self._res
                                      
         sum_cnt = 0
         i = 0
         while sum_cnt < 0.05 * self._total_cnts:
-            sum_cnt += self._aux_lc[i]                
+            sum_cnt += (self._aux_lc[i] * self._res)
             i += 1
         self._t90_i = self._aux_times[i]
                                      
         sum_cnt = 0
         j = -1
         while sum_cnt < 0.05 * self._total_cnts:
-            sum_cnt += self._aux_lc[j]                
+            sum_cnt += (self._aux_lc[j] * self._res)
             j -= 1
         self._t90_f = self._aux_times[j]                             
         
         self._t90 = self._t90_f - self._t90_i            
-        self._t90_cnts = np.sum(self._aux_lc[i:j+1])
+        self._t90_cnts = np.sum(self._aux_lc[i:j+1]) * self._t90
         
        
     @property
@@ -228,7 +274,7 @@ class LC(object):
         return "{:0.3f}".format(self._t100), "{:0.3f}".format(self._t_start), "{:0.3f}".format(self._t_stop)
     
     @property
-    def total_rate(self):
+    def total_counts(self):
         return "{:0.2f}".format(self._total_cnts)
     
     @property
@@ -247,12 +293,13 @@ class LC(object):
 class Restored_LC(LC):
     """
     Class to restore an avalanche from yaml file
+    
+    :res: GRB LC time resolution
     """
     
-    def __init__(self, par_list):
+    def __init__(self, par_list, res=0.256):
         
-        super(Restored_LC, self).__init__(t_min=-10, t_max=1000, res=0.256, eff_area=3600, \
-                                          bg_level=10.67, verbose=False)
+        super(Restored_LC, self).__init__(res=res)
 
         if not par_list:
             raise TypeError("Avalanche parameters should be given")
@@ -262,8 +309,12 @@ class Restored_LC(LC):
             self._par_list = par_list
             
         self._raw_lc = np.zeros(len(self._times))
-    
-    def restore_lc(self):
+        
+        self._restore_lc()
+
+        
+    def _restore_lc(self):
+        """Restores GRB LC from avalanche parameters"""
         
         for par in self._par_list:
             norm = par['norm']
@@ -274,3 +325,5 @@ class Restored_LC(LC):
 
         self._plot_lc =  self._raw_lc * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
         self._aux_lc = self._plot_lc[self._raw_lc>self._raw_lc.max()*1e-4]
+
+        self._get_lc_properties()
