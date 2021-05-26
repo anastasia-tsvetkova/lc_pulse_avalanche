@@ -1,9 +1,16 @@
-from math import exp, log
 import inspect
-from scipy.stats import loguniform
-from numpy.random import exponential, uniform, lognormal, normal
-import numpy as np
+import math
+from math import exp, log
+
 import matplotlib.pyplot as plt
+import numba
+import numba as nb
+import numpy as np
+from numpy.random import exponential, lognormal, normal, uniform
+from scipy.stats import loguniform
+
+_EXPANSION_CONSTANT_ = 1.7
+
 
 
 class LC(object):
@@ -131,7 +138,24 @@ class LC(object):
                 
         return self._rates
         
-    
+
+    def generate_avalanche_fast(self):
+
+
+        self._lc_params = []
+        
+        norms, t_delays, taus, tau_rs = gen_avalanche(mu_0= self._mu0, tau_min= self._tau_min , tau_max= self._tau_max,
+                             alpha= self._alpha, resoltuion= self._res, delta1= self._delta1, delta2= self._delta2, mu= self._mu)
+
+
+        for i,j,k,l in zip(norms, t_delays, taus, tau_rs):
+         
+            self._lc_params.append(dict(norm=i, t_delay=j, tau=k, tau_r=l))
+
+
+        return self._lc_params
+
+         
     def generate_avalanche(self):
         """
         Generates pulse avalanche
@@ -327,3 +351,242 @@ class Restored_LC(LC):
         self._aux_lc = self._plot_lc[self._raw_lc>self._raw_lc.max()*1e-4]
 
         self._get_lc_properties()
+
+
+def Vector(numba_type):
+    """Generates an instance of a dynamically resized vector numba jitclass."""
+
+    if numba_type in Vector._saved_type:
+        return Vector._saved_type[numba_type]
+
+    class _Vector:
+        """Dynamically sized arrays in nopython mode."""
+
+        def __init__(self, n):
+            """Initialize with space enough to hold n garbage values."""
+            self.n = n
+            self.m = n
+            self.full_arr = np.empty(self.n, dtype=numba_type)
+
+        @property
+        def size(self):
+            """The number of valid values."""
+            return self.n
+
+        @property
+        def arr(self):
+            """Return the subarray."""
+            return self.full_arr[: self.n]
+
+        @property
+        def last(self):
+            """The last element in the array."""
+            if self.n:
+                return self.full_arr[self.n - 1]
+            else:
+                raise IndexError("This numbavec has no elements: cannot return 'last'.")
+
+        @property
+        def first(self):
+            """The first element in the array."""
+            if self.n:
+                return self.full_arr[0]
+            else:
+                raise IndexError(
+                    "This numbavec has no elements: cannot return 'first'."
+                )
+
+        def clear(self):
+            """Remove all elements from the array."""
+            self.n = 0
+            return self
+
+        def extend(self, other):
+            """Add the contents of a numpy array to the end of this Vector.
+
+            Arguments
+            ---------
+            other : 1d array
+                The values to add to the end.
+            """
+            n_required = self.size + other.size
+            self.reserve(n_required)
+            self.full_arr[self.size : n_required] = other
+            self.n = n_required
+            return self
+
+        def append(self, val):
+            """Add a value to the end of the Vector, expanding it if necessary."""
+            if self.n == self.m:
+                self._expand()
+            self.full_arr[self.n] = val
+            self.n += 1
+            return self
+
+        def reserve(self, n):
+            """Reserve a n elements in the underlying array.
+
+            Arguments
+            ---------
+            n : int
+                The number of elements to reserve
+
+            Reserving n elements ensures no resize overhead when appending up
+            to size n-1 .
+            """
+            if n > self.m:  # Only change size if we are
+                temp = np.empty(int(n), dtype=numba_type)
+                temp[: self.n] = self.arr
+                self.full_arr = temp
+                self.m = n
+            return self
+
+        def consolidate(self):
+            """Remove unused memory from the array."""
+            if self.n < self.m:
+                self.full_arr = self.arr.copy()
+                self.m = self.n
+            return self
+
+        def __array__(self):
+            """Array inteface for Numpy compatibility."""
+            return self.full_arr[: self.n]
+
+        def _expand(self):
+            """Internal function that handles the resizing of the array."""
+            self.m = int(self.m * _EXPANSION_CONSTANT_) + 1
+            temp = np.empty(self.m, dtype=numba_type)
+            temp[: self.n] = self.full_arr[: self.n]
+            self.full_arr = temp
+
+        def set_to(self, arr):
+            """Make this vector point to another array of values.
+
+            Arguments
+            ---------
+            arr : 1d array
+                Array to set this vector to. After this operation, self.arr
+                will be equal to arr. The dtype of this array must be the 
+                same dtype as used to create the vector. Cannot be a readonly
+                vector.
+            """
+            self.full_arr = arr
+            self.n = self.m = arr.size
+
+        def set_to_copy(self, arr):
+            """Set this vector to an array, copying the underlying input.
+
+            Arguments
+            ---------
+            arr : 1d array
+                Array to set this vector to. After this operation, self.arr
+                will be equal to arr. The dtype of this array must be the 
+                same dtype as used to create the vector.
+            """
+            self.full_arr = arr.copy()
+            self.n = self.m = arr.size
+
+    if numba_type not in Vector._saved_type:
+        spec = [("n", numba.uint64), ("m", numba.uint64), ("full_arr", numba_type[:])]
+        Vector._saved_type[numba_type] = numba.experimental.jitclass(spec)(_Vector)
+
+    return Vector._saved_type[numba_type]
+
+
+Vector._saved_type = dict()
+
+VectorUint8 = Vector(numba.uint8)
+VectorUint16 = Vector(numba.uint16)
+VectorUint32 = Vector(numba.uint32)
+VectorUint64 = Vector(numba.uint64)
+
+VectorInt8 = Vector(numba.int8)
+VectorInt16 = Vector(numba.int16)
+VectorInt32 = Vector(numba.int32)
+VectorInt64 = Vector(numba.int64)
+
+VectorFloat32 = Vector(numba.float32)
+VectorFloat64 = Vector(numba.float64)
+
+VectorComplex64 = Vector(numba.complex64)
+VectorComplex128 = Vector(numba.complex128)
+
+__all_types = tuple(v for k, v in Vector._saved_type.items())
+
+
+def _isinstance(obj):
+    return isinstance(obj, __all_types)
+
+
+@nb.njit(fastmath=True)
+def gen_avalanche(mu_0, tau_min, tau_max, alpha, resoltuion, delta1, delta2, mu):
+
+    # number of spontaneous primary pulses: p5(mu_s) = exp(-mu_s/mu0)/mu0
+    mu_s = np.round(np.random.exponential(scale=mu_0))
+    if mu_s == 0:
+        mu_s = 1 
+
+    norms = VectorFloat64(0)
+    t_delays = VectorFloat64(0)
+    taus = VectorFloat64(0)
+    tau_rs = VectorFloat64(0)
+
+
+    log_tau_min = np.log(tau_min)
+    log_tau_max = np.log(tau_max)
+
+    
+    
+    for i in range(mu_s):
+        # time constant of spontaneous pulses: p6(log tau0) = 1/(log tau_max - log tau_min)
+        # decay time
+
+        tau0 = math.exp(np.random.uniform(log_tau_max, log_tau_min))
+    
+        # rise time
+        tau_r = 0.5 * tau0
+
+        # time delay of spontaneous primary pulses: p7(t) = exp(-t/(alpha*tau0))/(alpha*tau0)
+        t_delay = np.random.exponential(scale = alpha*tau0)
+
+        # pulse amplitude: p1(A) = 1 in [0, 1]
+        norm = np.random.rand()
+
+        norms.append(norm)
+        t_delays.append(t_delay)
+        taus.append(tau0)
+        tau_rs.append(tau_r)
+
+        
+        tau1 = tau_r
+
+        t_shift = t_delay
+
+        while tau1 > resoltuion:
+
+            mu_b = np.round(np.random.exponential(scale= mu))
+            
+            for i in range(mu_b):
+
+                # time const of the baby pulse: p4(tau/tau1) = 1/(delta2 - delta1), tau1 - time const of the parent pulse
+                tau = tau1 * math.exp(np.random.uniform(delta1, delta2))
+
+                tau_r = 0.5 * tau
+
+                # time delay of baby pulse: p3(delta_t) = exp(-delta_t/(alpha*tau))/(alpha*tau) with respect to the parent pulse, 
+                # alpha - delay parameter, tau - time const of the baby pulse
+                delta_t = np.random.exponential(scale=alpha*tau) + t_shift
+
+                norm = np.random.rand()
+                
+                norms.append(norm)
+                t_delays.append(delta_t)
+                taus.append(tau)
+                tau_rs.append(tau_r)
+
+                tau1 = tau_r
+
+                t_shift = delta_t
+                
+    return norms.arr, t_delays.arr, taus.arr, tau_rs.arr
+    
