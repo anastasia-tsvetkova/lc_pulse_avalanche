@@ -88,7 +88,7 @@ class LC(object):
         if tau_r == 0 or tau == 0: 
             return np.zeros(len(t))
         
-        return np.append(norm * np.exp(-(t[t<=tp]-_tp[t<=tp])**2/tau_r**2), \
+        return np.append(norm * np.exp(-(t[t<=tp]-_tp[t<=tp])**2/tau_r**2), 
                          norm * np.exp(-(t[t>tp]-_tp[t>tp])/tau))
     
     
@@ -139,10 +139,10 @@ class LC(object):
         return self._rates
         
 
-    def generate_avalanche_fast(self):
+    def generate_avalanche(self):
 
 
-        self._lc_params = []
+#         self._lc_params = []
         
         norms, t_delays, taus, tau_rs = gen_avalanche(mu_0= self._mu0, tau_min= self._tau_min , tau_max= self._tau_max,
                              alpha= self._alpha, resoltuion= self._res, delta1= self._delta1, delta2= self._delta2, mu= self._mu)
@@ -156,76 +156,7 @@ class LC(object):
         return self._lc_params
 
          
-    def generate_avalanche(self):
-        """
-        Generates pulse avalanche
-        
-        :returns: set of parameters for the generated avalanche
-        """
-        
-        if self._verbose:
-            inspect.getdoc(self.generate_avalanche)
-            
-        """
-        Starting pulse avalanche
-        """
    
-        # number of spontaneous primary pulses: p5(mu_s) = exp(-mu_s/mu0)/mu0
-        mu_s = round(exponential(scale=self._mu0))
-        if mu_s == 0:  mu_s = 1 
-            
-        if self._verbose:
-            print("Number of spontaneous pulses:", mu_s)
-            print("--------------------------------------------------------------------------")
-        
-        for i in range(mu_s):
-            # time constant of spontaneous pulses: p6(log tau0) = 1/(log tau_max - log tau_min)
-            # decay time
-            tau0 = exp(uniform(low=log(self._tau_max), high=log(self._tau_min)))
-
-            # rise time
-            tau_r = 0.5 * tau0
-
-            # time delay of spontaneous primary pulses: p7(t) = exp(-t/(alpha*tau0))/(alpha*tau0)
-            t_delay = exponential(scale=self._alpha*tau0)
-
-            # pulse amplitude: p1(A) = 1 in [0, 1]
-            norm = uniform(low=0.0, high=1) 
-                     
-            if self._verbose:
-                print("Spontaneous pulse amplitude: {:0.3f}".format(norm))
-                print("Spontaneous pulse shift: {:0.3f}".format(t_delay))
-                print("Time constant (the decay time) of spontaneous pulse: {0:0.3f}".format(tau0))
-                print("Rise time of spontaneous pulse: {:0.3f}".format(tau_r))
-                print("--------------------------------------------------------------------------")
-                
-            self._sp_pulse += self.norris_pulse(norm, t_delay, tau0, tau_r)
-            
-            self._lc_params.append(dict(norm=norm, t_delay=t_delay, tau=tau0, tau_r=tau_r))
-            
-            self._rec_gen_pulse(tau0, t_delay)
-        
-        # lc directly from the avalanche
-        self._raw_lc = self._sp_pulse + self._rates
-        
-        cnt_flux_low = self._min_photon_rate * self._eff_area / self._raw_lc.max()
-        cnt_flux_high = self._max_photon_rate * self._eff_area / self._raw_lc.max()
-        population = np.geomspace(cnt_flux_low, cnt_flux_high, 1000)
-        weights = list(map(lambda x: x**(-3/2), population))
-        weights = weights / np.sum(weights)
-        ampl = np.random.choice(population, p=weights)
-        
-        # lc from avalanche scaled + Poissonian bg added
-        self._plot_lc = self._raw_lc * ampl + np.random.default_rng().poisson((self._bg), self._n)
-        
-        self._get_lc_properties()
-        
-        for p in self._lc_params:
-            p['norm'] *= ampl/self._eff_area 
-
-        return self._lc_params
-
-    
     def plot_lc(self, rescale=True, save=True, name="./plot_lc.pdf", show_duration=False):
         """
         Plots GRB light curve
@@ -238,6 +169,8 @@ class LC(object):
         plt.xlabel('T-T0 (s)')
         plt.ylabel('Count rate (cnt/s)')
                 
+        self._restore_lc()
+        
         plt.step(self._times, self._plot_lc)
         
         if rescale:
@@ -264,7 +197,6 @@ class LC(object):
         """
         
         self._aux_times = self._times[self._raw_lc>self._raw_lc.max()*1e-4]
-        self._aux_lc = self._plot_lc[self._raw_lc>self._raw_lc.max()*1e-4]
         
         self._t_start = self._aux_times[0]
         self._t_stop = self._aux_times[-1]
@@ -299,7 +231,8 @@ class LC(object):
     
     @property
     def total_counts(self):
-        return "{:0.2f}".format(self._total_cnts)
+#         return "{:0.2f}".format(self._total_cnts)
+        return "{:0.2f}".format(np.mean(self._aux_lc)*self._t100)
     
     @property
     def max_rate(self):
@@ -312,6 +245,24 @@ class LC(object):
     @property
     def bg_rate(self):
         return "{:0.2f}".format(self._bg)
+    
+    
+    def _restore_lc(self):
+        """Restores GRB LC from avalanche parameters"""
+        
+        self._raw_lc = np.zeros(len(self._times))
+        
+        for par in self._lc_params:
+            norm = par['norm']
+            t_delay = par['t_delay']
+            tau = par['tau']
+            tau_r = par['tau_r']
+            self._raw_lc += self.norris_pulse(norm, t_delay, tau, tau_r)
+
+        self._plot_lc =  self._raw_lc * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
+        self._aux_lc = self._plot_lc[self._raw_lc>self._raw_lc.max()*1e-4]
+
+        self._get_lc_properties()
 
     
 class Restored_LC(LC):
@@ -330,29 +281,13 @@ class Restored_LC(LC):
         elif not isinstance(par_list, list):
             raise TypeError("The avalanche parameters should be a list of dictionaries")
         else:
-            self._par_list = par_list
+            self._lc_params = par_list
             
-        self._raw_lc = np.zeros(len(self._times))
-        
+ 
         self._restore_lc()
 
-        
-    def _restore_lc(self):
-        """Restores GRB LC from avalanche parameters"""
-        
-        for par in self._par_list:
-            norm = par['norm']
-            t_delay = par['t_delay']
-            tau = par['tau']
-            tau_r = par['tau_r']
-            self._raw_lc += self.norris_pulse(norm, t_delay, tau, tau_r)
 
-        self._plot_lc =  self._raw_lc * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
-        self._aux_lc = self._plot_lc[self._raw_lc>self._raw_lc.max()*1e-4]
-
-        self._get_lc_properties()
-
-
+    
 def Vector(numba_type):
     """Generates an instance of a dynamically resized vector numba jitclass."""
 
