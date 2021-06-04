@@ -1,16 +1,10 @@
 import inspect
 import math
 from math import exp, log
-
 import matplotlib.pyplot as plt
-import numba
-import numba as nb
 import numpy as np
 from numpy.random import exponential, lognormal, normal, uniform
 from scipy.stats import loguniform
-
-_EXPANSION_CONSTANT_ = 1.7
-
 
 
 class LC(object):
@@ -33,12 +27,12 @@ class LC(object):
     :bg_level: backgrounf level (cnt/cm2/s)
     :min_photon_rate: left boundary of -3/2 log N - log S distrubution (ph/cm2/s)
     :max_photon_rate: right boundary of -3/2 log N - log S distrubution (ph/cm2/s)
-    
+    :sigma: signal above background level
     """
     
     def __init__(self, mu=1.2, mu0=1, alpha=4, delta1=-0.5, delta2=0, tau_min=0.2, tau_max=26,
                  t_min=-10, t_max=1000, res=0.256, eff_area=3600, bg_level=10.67, min_photon_rate=1.3,
-                 max_photon_rate=1300, verbose=False):
+                 max_photon_rate=1300, sigma=5, verbose=False):
         
         self._mu = mu # mu~1 => critical runaway regime
         self._mu0 = mu0 # average number of spontaneous pulses per GRB
@@ -63,11 +57,12 @@ class LC(object):
         self._sp_pulse = np.zeros(len(self._times))
         self._total_rates = np.zeros(len(self._times))
         self._lc_params = list()
+        self._sigma = sigma
         
         if self._verbose:
             print("Time resolution: ", self._step)
                 
-        
+     
     def norris_pulse(self, norm, tp, tau, tau_r):
         """
         Computes a single pulse according to Norris te al., ApJ, 459, 393 (1996)
@@ -88,10 +83,10 @@ class LC(object):
         if tau_r == 0 or tau == 0: 
             return np.zeros(len(t))
         
-        return np.append(norm * np.exp(-(t[t<=tp]-_tp[t<=tp])**2/tau_r**2), 
+        return np.append(norm * np.exp(-(t[t<=tp]-_tp[t<=tp])**2/tau_r**2), \
                          norm * np.exp(-(t[t>tp]-_tp[t>tp])/tau))
-    
-    
+
+   
     def _rec_gen_pulse(self, tau1, t_shift):
         """
         Recursively generates pulses from Norris function
@@ -138,24 +133,74 @@ class LC(object):
                 
         return self._rates
         
-
-    def generate_avalanche(self):
-
-
-#         self._lc_params = []
         
-        norms, t_delays, taus, tau_rs = gen_avalanche(mu_0= self._mu0, tau_min= self._tau_min , tau_max= self._tau_max,
-                             alpha= self._alpha, resoltuion= self._res, delta1= self._delta1, delta2= self._delta2, mu= self._mu)
+    def generate_avalanche(self):
+        """
+        Generates pulse avalanche
+        
+        :returns: set of parameters for the generated avalanche
+        """
+        
+        if self._verbose:
+            inspect.getdoc(self.generate_avalanche)
+            
+        """
+        Starting pulse avalanche
+        """
+   
+        # number of spontaneous primary pulses: p5(mu_s) = exp(-mu_s/mu0)/mu0
+        mu_s = round(exponential(scale=self._mu0))
+        if mu_s == 0:  mu_s = 1 
+            
+        if self._verbose:
+            print("Number of spontaneous pulses:", mu_s)
+            print("--------------------------------------------------------------------------")
+        
+        for i in range(mu_s):
+            # time constant of spontaneous pulses: p6(log tau0) = 1/(log tau_max - log tau_min)
+            # decay time
+            tau0 = exp(uniform(low=log(self._tau_max), high=log(self._tau_min)))
 
+            # rise time
+            tau_r = 0.5 * tau0
 
-        for i,j,k,l in zip(norms, t_delays, taus, tau_rs):
-         
-            self._lc_params.append(dict(norm=i, t_delay=j, tau=k, tau_r=l))
+            # time delay of spontaneous primary pulses: p7(t) = exp(-t/(alpha*tau0))/(alpha*tau0)
+            t_delay = exponential(scale=self._alpha*tau0)
 
+            # pulse amplitude: p1(A) = 1 in [0, 1]
+            norm = uniform(low=0.0, high=1) 
+                     
+            if self._verbose:
+                print("Spontaneous pulse amplitude: {:0.3f}".format(norm))
+                print("Spontaneous pulse shift: {:0.3f}".format(t_delay))
+                print("Time constant (the decay time) of spontaneous pulse: {0:0.3f}".format(tau0))
+                print("Rise time of spontaneous pulse: {:0.3f}".format(tau_r))
+                print("--------------------------------------------------------------------------")
+                
+            self._sp_pulse += self.norris_pulse(norm, t_delay, tau0, tau_r)
+            
+            self._lc_params.append(dict(norm=norm, t_delay=t_delay, tau=tau0, tau_r=tau_r))
+            
+            self._rec_gen_pulse(tau0, t_delay)
+        
+        # lc directly from the avalanche
+        self._raw_lc = self._sp_pulse + self._rates
 
+        population = np.geomspace(self._min_photon_rate , self._max_photon_rate, 1000)
+        weights = list(map(lambda x: x**(-3/2), population))
+        weights = weights / np.sum(weights)
+        ampl = np.random.choice(population, p=weights) / self._raw_lc.max()
+        
+#         lc from avalanche scaled + Poissonian bg added
+        self._plot_lc = self._raw_lc * ampl * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
+
+        self._get_lc_properties()
+        
+        for p in self._lc_params:
+            p['norm'] *= ampl
+        
         return self._lc_params
 
-         
    
     def plot_lc(self, rescale=True, save=True, name="./plot_lc.pdf", show_duration=False):
         """
@@ -171,11 +216,12 @@ class LC(object):
                 
         self._restore_lc()
         
-        plt.step(self._times, self._plot_lc)
+        plt.step(self._times, self._plot_lc, where='post')
+        plt.plot(np.linspace(self._t_min, self._t_max, num=2, endpoint=True), [self._bg, self._bg], 'r--')
         
         if rescale:
-            t_i = max(self._t_start - 0.3*self._t100, self._t_min)
-            t_f = self._t_stop + 0.3*self._t100
+            t_i = max(self._t_start - 0.5*self._t100, self._t_min)
+            t_f = self._t_stop + 0.5*self._t100
             plt.xlim([t_i, t_f])
             
         if show_duration:
@@ -196,31 +242,48 @@ class LC(object):
         mean, max, and background count rates
         """
         
-        self._aux_times = self._times[self._raw_lc>self._raw_lc.max()*1e-4]
-        
-        self._t_start = self._aux_times[0]
-        self._t_stop = self._aux_times[-1]
+        self._aux_index = np.where(self._raw_lc>self._raw_lc.max()*1e-4)
+#         self._aux_index = np.where((self._plot_lc - self._bg) * self._res / (self._bg * self._res)**0.5 >= self._sigma)
+        self._max_snr = ((self._plot_lc - self._bg) * self._res / (self._bg * self._res)**0.5).max()
+        self._aux_times = self._times[self._aux_index[0][0]:self._aux_index[0][-1]] # +1 in the index
+        self._aux_lc = self._plot_lc[self._aux_index[0][0]:self._aux_index[0][-1]]
+
+        self._t_start = self._times[self._aux_index[0][0]]
+        self._t_stop = self._times[self._aux_index[0][-1]+1]
+            
         self._t100 = self._t_stop - self._t_start
-        self._total_cnts = np.sum(self._aux_lc) * self._res
-                                     
-        sum_cnt = 0
-        i = 0
-        while sum_cnt < 0.05 * self._total_cnts:
-            sum_cnt += (self._aux_lc[i] * self._res)
-            i += 1
-        self._t90_i = self._aux_times[i]
-                                     
-        sum_cnt = 0
-        j = -1
-        while sum_cnt < 0.05 * self._total_cnts:
-            sum_cnt += (self._aux_lc[j] * self._res)
-            j -= 1
-        self._t90_f = self._aux_times[j]                             
         
-        self._t90 = self._t90_f - self._t90_i            
-        self._t90_cnts = np.sum(self._aux_lc[i:j+1]) * self._t90
-        
-       
+        self._total_cnts = np.sum(self._aux_lc - self._bg*np.ones(len(self._aux_lc))) * self._res
+                
+        try:
+            sum_cnt = 0
+            i = 0
+            while sum_cnt < 0.05 * self._total_cnts:
+                sum_cnt += (self._aux_lc[i] - self._bg) * self._res
+                i += 1
+                
+            self._t90_i = self._aux_times[i]
+                                     
+            sum_cnt = 0
+            j = -1
+            while sum_cnt < 0.05 * self._total_cnts:
+                sum_cnt += (self._aux_lc[j] - self._bg) * self._res
+                j += -1
+
+            self._t90_f = self._aux_times[j]      
+
+            self._t90 = self._t90_f - self._t90_i            
+            self._t90_cnts = np.sum(self._aux_lc[i:j+1] - self._bg) * self._res
+            
+            assert self._t90_i < self._t90_f
+            
+        except:
+            self._t90 = self._t100
+            self._t90_i = self._t_start
+            self._t90_f = self._t_stop
+            self._t90_cnts = self._total_cnts
+           
+
     @property
     def T90(self):
         return "{:0.3f}".format(self._t90), "{:0.3f}".format(self._t90_i), "{:0.3f}".format(self._t90_f)
@@ -231,8 +294,7 @@ class LC(object):
     
     @property
     def total_counts(self):
-#         return "{:0.2f}".format(self._total_cnts)
-        return "{:0.2f}".format(np.mean(self._aux_lc)*self._t100)
+        return "{:0.2f}".format(self._total_cnts)
     
     @property
     def max_rate(self):
@@ -246,6 +308,10 @@ class LC(object):
     def bg_rate(self):
         return "{:0.2f}".format(self._bg)
     
+    @property
+    def max_snr(self):
+        return "{:0.2f}".format(self._max_snr)
+    
     
     def _restore_lc(self):
         """Restores GRB LC from avalanche parameters"""
@@ -257,10 +323,9 @@ class LC(object):
             t_delay = par['t_delay']
             tau = par['tau']
             tau_r = par['tau_r']
-            self._raw_lc += self.norris_pulse(norm, t_delay, tau, tau_r)
+            self._raw_lc += self.norris_pulse(norm, t_delay, tau, tau_r) #
 
         self._plot_lc =  self._raw_lc * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
-        self._aux_lc = self._plot_lc[self._raw_lc>self._raw_lc.max()*1e-4]
 
         self._get_lc_properties()
 
@@ -272,9 +337,9 @@ class Restored_LC(LC):
     :res: GRB LC time resolution
     """
     
-    def __init__(self, par_list, res=0.256):
+    def __init__(self, par_list, res=0.256, t_min=-10, t_max=1000, sigma=5):
         
-        super(Restored_LC, self).__init__(res=res)
+        super(Restored_LC, self).__init__(res=res, t_min=t_min, t_max=t_max, sigma=sigma)
 
         if not par_list:
             raise TypeError("Avalanche parameters should be given")
@@ -285,243 +350,3 @@ class Restored_LC(LC):
             
  
         self._restore_lc()
-
-
-    
-def Vector(numba_type):
-    """Generates an instance of a dynamically resized vector numba jitclass."""
-
-    if numba_type in Vector._saved_type:
-        return Vector._saved_type[numba_type]
-
-    class _Vector:
-        """Dynamically sized arrays in nopython mode."""
-
-        def __init__(self, n):
-            """Initialize with space enough to hold n garbage values."""
-            self.n = n
-            self.m = n
-            self.full_arr = np.empty(self.n, dtype=numba_type)
-
-        @property
-        def size(self):
-            """The number of valid values."""
-            return self.n
-
-        @property
-        def arr(self):
-            """Return the subarray."""
-            return self.full_arr[: self.n]
-
-        @property
-        def last(self):
-            """The last element in the array."""
-            if self.n:
-                return self.full_arr[self.n - 1]
-            else:
-                raise IndexError("This numbavec has no elements: cannot return 'last'.")
-
-        @property
-        def first(self):
-            """The first element in the array."""
-            if self.n:
-                return self.full_arr[0]
-            else:
-                raise IndexError(
-                    "This numbavec has no elements: cannot return 'first'."
-                )
-
-        def clear(self):
-            """Remove all elements from the array."""
-            self.n = 0
-            return self
-
-        def extend(self, other):
-            """Add the contents of a numpy array to the end of this Vector.
-
-            Arguments
-            ---------
-            other : 1d array
-                The values to add to the end.
-            """
-            n_required = self.size + other.size
-            self.reserve(n_required)
-            self.full_arr[self.size : n_required] = other
-            self.n = n_required
-            return self
-
-        def append(self, val):
-            """Add a value to the end of the Vector, expanding it if necessary."""
-            if self.n == self.m:
-                self._expand()
-            self.full_arr[self.n] = val
-            self.n += 1
-            return self
-
-        def reserve(self, n):
-            """Reserve a n elements in the underlying array.
-
-            Arguments
-            ---------
-            n : int
-                The number of elements to reserve
-
-            Reserving n elements ensures no resize overhead when appending up
-            to size n-1 .
-            """
-            if n > self.m:  # Only change size if we are
-                temp = np.empty(int(n), dtype=numba_type)
-                temp[: self.n] = self.arr
-                self.full_arr = temp
-                self.m = n
-            return self
-
-        def consolidate(self):
-            """Remove unused memory from the array."""
-            if self.n < self.m:
-                self.full_arr = self.arr.copy()
-                self.m = self.n
-            return self
-
-        def __array__(self):
-            """Array inteface for Numpy compatibility."""
-            return self.full_arr[: self.n]
-
-        def _expand(self):
-            """Internal function that handles the resizing of the array."""
-            self.m = int(self.m * _EXPANSION_CONSTANT_) + 1
-            temp = np.empty(self.m, dtype=numba_type)
-            temp[: self.n] = self.full_arr[: self.n]
-            self.full_arr = temp
-
-        def set_to(self, arr):
-            """Make this vector point to another array of values.
-
-            Arguments
-            ---------
-            arr : 1d array
-                Array to set this vector to. After this operation, self.arr
-                will be equal to arr. The dtype of this array must be the 
-                same dtype as used to create the vector. Cannot be a readonly
-                vector.
-            """
-            self.full_arr = arr
-            self.n = self.m = arr.size
-
-        def set_to_copy(self, arr):
-            """Set this vector to an array, copying the underlying input.
-
-            Arguments
-            ---------
-            arr : 1d array
-                Array to set this vector to. After this operation, self.arr
-                will be equal to arr. The dtype of this array must be the 
-                same dtype as used to create the vector.
-            """
-            self.full_arr = arr.copy()
-            self.n = self.m = arr.size
-
-    if numba_type not in Vector._saved_type:
-        spec = [("n", numba.uint64), ("m", numba.uint64), ("full_arr", numba_type[:])]
-        Vector._saved_type[numba_type] = numba.experimental.jitclass(spec)(_Vector)
-
-    return Vector._saved_type[numba_type]
-
-
-Vector._saved_type = dict()
-
-VectorUint8 = Vector(numba.uint8)
-VectorUint16 = Vector(numba.uint16)
-VectorUint32 = Vector(numba.uint32)
-VectorUint64 = Vector(numba.uint64)
-
-VectorInt8 = Vector(numba.int8)
-VectorInt16 = Vector(numba.int16)
-VectorInt32 = Vector(numba.int32)
-VectorInt64 = Vector(numba.int64)
-
-VectorFloat32 = Vector(numba.float32)
-VectorFloat64 = Vector(numba.float64)
-
-VectorComplex64 = Vector(numba.complex64)
-VectorComplex128 = Vector(numba.complex128)
-
-__all_types = tuple(v for k, v in Vector._saved_type.items())
-
-
-def _isinstance(obj):
-    return isinstance(obj, __all_types)
-
-
-@nb.njit(fastmath=True)
-def gen_avalanche(mu_0, tau_min, tau_max, alpha, resoltuion, delta1, delta2, mu):
-
-    # number of spontaneous primary pulses: p5(mu_s) = exp(-mu_s/mu0)/mu0
-    mu_s = np.round(np.random.exponential(scale=mu_0))
-    if mu_s == 0:
-        mu_s = 1 
-
-    norms = VectorFloat64(0)
-    t_delays = VectorFloat64(0)
-    taus = VectorFloat64(0)
-    tau_rs = VectorFloat64(0)
-
-
-    log_tau_min = np.log(tau_min)
-    log_tau_max = np.log(tau_max)
-
-    
-    
-    for i in range(mu_s):
-        # time constant of spontaneous pulses: p6(log tau0) = 1/(log tau_max - log tau_min)
-        # decay time
-
-        tau0 = math.exp(np.random.uniform(log_tau_max, log_tau_min))
-    
-        # rise time
-        tau_r = 0.5 * tau0
-
-        # time delay of spontaneous primary pulses: p7(t) = exp(-t/(alpha*tau0))/(alpha*tau0)
-        t_delay = np.random.exponential(scale = alpha*tau0)
-
-        # pulse amplitude: p1(A) = 1 in [0, 1]
-        norm = np.random.rand()
-
-        norms.append(norm)
-        t_delays.append(t_delay)
-        taus.append(tau0)
-        tau_rs.append(tau_r)
-
-        
-        tau1 = tau_r
-
-        t_shift = t_delay
-
-        while tau1 > resoltuion:
-
-            mu_b = np.round(np.random.exponential(scale= mu))
-            
-            for i in range(mu_b):
-
-                # time const of the baby pulse: p4(tau/tau1) = 1/(delta2 - delta1), tau1 - time const of the parent pulse
-                tau = tau1 * math.exp(np.random.uniform(delta1, delta2))
-
-                tau_r = 0.5 * tau
-
-                # time delay of baby pulse: p3(delta_t) = exp(-delta_t/(alpha*tau))/(alpha*tau) with respect to the parent pulse, 
-                # alpha - delay parameter, tau - time const of the baby pulse
-                delta_t = np.random.exponential(scale=alpha*tau) + t_shift
-
-                norm = np.random.rand()
-                
-                norms.append(norm)
-                t_delays.append(delta_t)
-                taus.append(tau)
-                tau_rs.append(tau_r)
-
-                tau1 = tau_r
-
-                t_shift = delta_t
-                
-    return norms.arr, t_delays.arr, taus.arr, tau_rs.arr
-    
