@@ -28,11 +28,12 @@ class LC(object):
     :min_photon_rate: left boundary of -3/2 log N - log S distrubution (ph/cm2/s)
     :max_photon_rate: right boundary of -3/2 log N - log S distrubution (ph/cm2/s)
     :sigma: signal above background level
+    :n_cut: maximum number of pulses in avalanche (useful to speed up the simulations but in odds with the "classic" approach)
     """
     
     def __init__(self, mu=1.2, mu0=1, alpha=4, delta1=-0.5, delta2=0, tau_min=0.2, tau_max=26,
                  t_min=-10, t_max=1000, res=0.256, eff_area=3600, bg_level=10.67, min_photon_rate=1.3,
-                 max_photon_rate=1300, sigma=5, verbose=False):
+                 max_photon_rate=1300, sigma=5, n_cut=None, verbose=False):
         
         self._mu = mu # mu~1 => critical runaway regime
         self._mu0 = mu0 # average number of spontaneous pulses per GRB
@@ -58,6 +59,8 @@ class LC(object):
         self._total_rates = np.zeros(len(self._times))
         self._lc_params = list()
         self._sigma = sigma
+        self._n_cut = n_cut
+        self._n_pulses = 0
         
         if self._verbose:
             print("Time resolution: ", self._step)
@@ -74,6 +77,8 @@ class LC(object):
         :returns: an array of count rates
         """
 
+        self._n_pulses += 1
+        
         if self._verbose:
             print("Generating a new pulse with tau={:0.3f}".format(tau))
 
@@ -96,7 +101,7 @@ class LC(object):
         
         :returns: an array of count rates
         """
-        
+            
         # number of baby pulses: p2(mu_b) = exp(-mu_b/mu)/mu, mu - the average, mu_b - number of baby pulses
         mu_b = round(exponential(scale=self._mu))
                 
@@ -129,8 +134,12 @@ class LC(object):
                 print("--------------------------------------------------------------------------")
                 
             if tau > self._res:
-                self._rec_gen_pulse(tau, delta_t)
-                
+                if self._n_cut is None:
+                    self._rec_gen_pulse(tau, delta_t)
+                else:
+                    if self._n_pulses < self._n_cut:
+                        self._rec_gen_pulse(tau, delta_t)
+
         return self._rates
         
         
