@@ -11,7 +11,7 @@ setup(
 
     author = "Anastasia Tsvetkova",
     author_email = "tsvetkova.lea@gmail.com",
-g
+
     description = ("Creates GRB light curve generating a stochastic pulse avalanche according to Stern & Svensson (1996)."),
     long_description=read('README.md'),
 
