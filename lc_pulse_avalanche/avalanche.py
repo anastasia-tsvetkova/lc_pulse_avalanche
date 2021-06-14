@@ -258,7 +258,8 @@ class LC(object):
         self._aux_lc = self._plot_lc[self._aux_index[0][0]:self._aux_index[0][-1]]
 
         self._t_start = self._times[self._aux_index[0][0]]
-        self._t_stop = self._times[self._aux_index[0][-1]+1]
+#         self._t_stop = self._times[self._aux_index[0][-1]+1]
+        self._t_stop = self._times[self._aux_index[0][-1]]
             
         self._t100 = self._t_stop - self._t_start
         
