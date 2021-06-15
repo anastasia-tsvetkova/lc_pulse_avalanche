@@ -1,2 +1,4 @@
 #Ipython Notebook
 .ipynb_checkpoints
+lc_pulse_avalanche/__pycache__/
+lc_pulse_avalanche/plot_lc.pdf

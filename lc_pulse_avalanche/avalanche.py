@@ -86,7 +86,7 @@ class LC(object):
         :returns: an array of count rates
         """
 
-        self._n_pulses += 1
+#         self._n_pulses += 1
         
         if self._verbose:
             print("Generating a new pulse with tau={:0.3f}".format(tau))
@@ -153,6 +153,12 @@ class LC(object):
 
 
     def plaw_inv_cdf(self, p, lc_max):
+        """
+        Calculates scaling factor
+        :p: random number uniformely distributed in [0, 1)
+        :lc_max: the maximum height of the light curve
+        :returns: scale factor for the light curve
+        """
 
         x_min = self._min_photon_rate / lc_max
         x_max = self._max_photon_rate / lc_max
@@ -161,19 +167,32 @@ class LC(object):
         A = (1. - alpha)/(np.power(x_max, 1.-alpha) - np.power(x_min, 1.-alpha))
     
         return np.power(p*(1.-alpha)/A + np.power(x_min, 1.-alpha), 1./(1.-alpha))
-
     
 
     def generate_avalanche(self, seed=12345, return_array=False):
-        '''
-        Remember to change the seed iteratively.
-        '''
+        """
+        Generates an avalanche and the normalization for it from the logN-logS -3/2 law.
         
-        norms, t_delays, taus, tau_rs = gen_avalanche(mu_0= self._mu0, tau_min= self._tau_min , tau_max= self._tau_max,
-                             alpha= self._alpha, resoltuion= self._res, delta1= self._delta1, delta2= self._delta2, mu= self._mu, seed=seed)
+        !!!! Remember to change the seed iteratively !!!!
+        
+        :seed: random seed
+        :return_array: return the array of avalanche parameters
+        :returns: the array of avalanche parameters or nothing
+        """
+        
+        norms, t_delays, taus, tau_rs = gen_avalanche(mu_0= self._mu0, 
+                                                      tau_min= self._tau_min, 
+                                                      tau_max= self._tau_max,
+                                                      alpha= self._alpha, 
+                                                      resoltuion= self._res, 
+                                                      delta1= self._delta1, 
+                                                      delta2= self._delta2, 
+                                                      mu= self._mu, 
+                                                      seed=seed
+                                                     )
 
 
-        lc_max = compute_max_lightcurve(norms, t_delays, taus, tau_rs, dt=self._res)
+        lc_max = compute_max_lightcurve(norms, t_delays, taus, tau_rs, res=self._res)
 
         # set seed for random draw(same one as the avalanche generation)
         np.random.seed(seed)
@@ -201,12 +220,19 @@ class LC(object):
             for i,j,k,l in zip(norms, t_delays, taus, tau_rs):
 
                 self._lc_params.append(dict(norm=i, t_delay=j, tau=k, tau_r=l))
-                
-
+               
             return self._lc_params
 
 
     def hdf5_lc_generation(self, n_lcs, outfile, overwrite=False, start_seed=12345):
+        """
+        Generates a new avalanche and writes it to an hdf5 file
+        
+        :n_lcs: number of light curves we want to simulate
+        :outfile: file name
+        :overwrite: overwrite existing file
+        :start_seed: random seed for the avalanche generation
+        """
 
         if overwrite == False:
             assert os.path.isfile(outfile), 'ERROR: file already exists!'
@@ -235,7 +261,6 @@ class LC(object):
             f.create_dataset('GRB_PARAMETERS/GRB_%i' % i, data=grb_array)
             f['GRB_PARAMETERS/GRB_%i' % i].attrs['PEAK_VALUE'] = peak_value
             f['GRB_PARAMETERS/GRB_%i' % i].attrs['N_PULSES'] = n_pulses
-
             
         f.close()
         
@@ -279,7 +304,6 @@ class LC(object):
         mean, max, and background count rates
         """
         
-<<<<<<< HEAD
         self._aux_index = np.where(self._raw_lc>self._raw_lc.max()*1e-4)
 #         self._aux_index = np.where((self._plot_lc - self._bg) * self._res / (self._bg * self._res)**0.5 >= self._sigma)
         self._max_snr = ((self._plot_lc - self._bg) * self._res / (self._bg * self._res)**0.5).max()
@@ -291,9 +315,7 @@ class LC(object):
         self._t_stop = self._times[self._aux_index[0][-1]]
             
         self._t100 = self._t_stop - self._t_start
-=======
         self._aux_times = self._times[self._raw_lc>self._raw_lc.max()*1e-4]
->>>>>>> output_fixes
         
         self._t_start = self._aux_times[0]
         self._t_stop = self._aux_times[-1]
@@ -384,11 +406,9 @@ class Restored_LC(LC):
         else:
             self._lc_params = par_list
             
- 
         self._restore_lc()
 
 
-    
 def Vector(numba_type):
     """Generates an instance of a dynamically resized vector numba jitclass."""
 
@@ -597,7 +617,8 @@ def gen_avalanche(mu_0, tau_min, tau_max, alpha, resoltuion, delta1, delta2, mu,
         tau_rs.append(tau_r)
 
         
-        tau1 = tau_r
+#         tau1 = tau_r
+        tau1 = tau0
 
         t_shift = t_delay
 
@@ -623,25 +644,28 @@ def gen_avalanche(mu_0, tau_min, tau_max, alpha, resoltuion, delta1, delta2, mu,
                 taus.append(tau)
                 tau_rs.append(tau_r)
 
-                tau1 = tau_r
+#                 tau1 = tau_r
+                tau1 = tau
 
                 t_shift = delta_t
                 
     return norms.arr, t_delays.arr, taus.arr, tau_rs.arr
     
 
-
 @nb.njit(fastmath=True)
-def compute_max_lightcurve(norms, t_delays, taus, tau_rs, dt=0.003):
-    '''
-    Returns the maximum height of the light curve.
-    '''
+def compute_max_lightcurve(norms, t_delays, taus, tau_rs, res=0.003):
+    """
+    Computes the peak count rate of a light curve
+    :norms, t_delays, taus, tau_rs: avalanche parameters
+    :res: the light curve time resolution
+    :returns: the maximum height of the light curve.
+    """
     
     # find stop/start for lightcurve computation
     lc_start = np.min(t_delays - 3*tau_rs)
     lc_end = np.max(t_delays + taus)
     
-    t = np.arange(lc_start, lc_end, dt)
+    t = np.arange(lc_start, lc_end, res)
     
     values = np.zeros(len(t))
     
