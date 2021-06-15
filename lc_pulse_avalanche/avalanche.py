@@ -338,6 +338,38 @@ class LC(object):
         self._plot_lc =  self._raw_lc * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
 
         self._get_lc_properties()
+        
+        
+    def hdf5_lc_generation(self, n_lcs, outfile, overwrite=False, start_seed=12345):
+
+        if overwrite == False:
+            assert os.path.isfile(outfile), 'ERROR: file already exists!'
+
+        f = h5py.File(outfile, 'w')
+
+        
+        f.create_group('GRB_PARAMETERS')
+        f['GRB_PARAMETERS'].attrs['PARAMETER_ORDER'] = '[K, t_start, t_rise, t_decay]'
+
+        for i in range(n_lcs):
+
+            norms, t_delays, taus, tau_rs, peak_value = self.generate_avalanche(seed=start_seed+i, return_array=True)
+            
+            n_pulses = len(norms)
+
+            grb_array = np.concatenate((                                                                                                                                              
+                norms.reshape(n_pulses,1),                                                                                                                       
+                t_delays.reshape(n_pulses,1),                                                                                                                 
+                tau_rs.reshape(n_pulses,1),                                                                                                                  
+                taus.reshape(n_pulses,1)),                                                                                                                
+                axis=1                                                                                                                                             
+                )
+    
+            f.create_dataset('GRB_PARAMETERS/GRB_%i' % i, data=grb_array)
+            f['GRB_PARAMETERS/GRB_%i' % i].attrs['PEAK_VALUE'] = peak_value
+            f['GRB_PARAMETERS/GRB_%i' % i].attrs['N_PULSES'] = n_pulses
+
+        f.close()
 
     
 class Restored_LC(LC):
