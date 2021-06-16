@@ -274,7 +274,7 @@ class LC(object):
         mean, max, and background count rates
         """
         
-        self._aux_index = np.where(self._raw_lc>self._max_raw_pcr*1e-4)
+        self._aux_index = np.where(self._raw_lc>self._raw_lc.max()*1e-4)
 #         self._aux_index = np.where((self._plot_lc - self._bg) * self._res / (self._bg * self._res)**0.5 >= self._sigma)
         self._max_snr = ((self._plot_lc - self._bg) * self._res / (self._bg * self._res)**0.5).max()
         self._aux_times = self._times[self._aux_index[0][0]:self._aux_index[0][-1]] # +1 in the index
