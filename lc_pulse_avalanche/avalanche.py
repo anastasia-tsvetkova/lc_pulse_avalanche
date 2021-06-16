@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from numpy.random import exponential, lognormal, normal, uniform
 from scipy.stats import loguniform
-
+import os, h5py
 
 class LC(object):
     """
@@ -143,12 +143,17 @@ class LC(object):
         return self._rates
         
         
-    def generate_avalanche(self):
+    def generate_avalanche(self, seed=12345, return_array=False):
         """
         Generates pulse avalanche
         
+        :seed: random seed
+        :return_array: if True returns arrays of parameters, if False - a dict with parameters for each pulse
         :returns: set of parameters for the generated avalanche
         """
+        
+        # set seed for random draw (the same as for the avalanche generation)
+        np.random.seed(seed)
         
         if self._verbose:
             inspect.getdoc(self.generate_avalanche)
@@ -195,10 +200,13 @@ class LC(object):
         # lc directly from the avalanche
         self._raw_lc = self._sp_pulse + self._rates
 
+        self._max_raw_pcr = self._raw_lc.max()
         population = np.geomspace(self._min_photon_rate , self._max_photon_rate, 1000)
         weights = list(map(lambda x: x**(-3/2), population))
         weights = weights / np.sum(weights)
-        ampl = np.random.choice(population, p=weights) / self._raw_lc.max()
+        ampl = np.random.choice(population, p=weights) / self._max_raw_pcr
+        
+        self._peak_value = self._max_raw_pcr * ampl
         
 #         lc from avalanche scaled + Poissonian bg added
         self._plot_lc = self._raw_lc * ampl * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
@@ -208,7 +216,22 @@ class LC(object):
         for p in self._lc_params:
             p['norm'] *= ampl
         
-        return self._lc_params
+        norms = np.empty((0,))
+        t_delays = np.empty((0,))
+        taus = np.empty((0,))
+        tau_rs = np.empty((0,))
+        
+        if return_array:
+            for p in self._lc_params:
+                norms = np.append(norms, p['norm'])
+                t_delays = np.append(t_delays, p['t_delay'])
+                taus = np.append(taus, p['tau'])
+                tau_rs = np.append(tau_rs, p['tau_r'])
+                
+            return norms, t_delays, taus, tau_rs, self._peak_value
+        
+        else:
+            return self._lc_params
 
    
     def plot_lc(self, rescale=True, save=True, name="./plot_lc.pdf", show_duration=False):
@@ -251,7 +274,7 @@ class LC(object):
         mean, max, and background count rates
         """
         
-        self._aux_index = np.where(self._raw_lc>self._raw_lc.max()*1e-4)
+        self._aux_index = np.where(self._raw_lc>self._max_raw_pcr*1e-4)
 #         self._aux_index = np.where((self._plot_lc - self._bg) * self._res / (self._bg * self._res)**0.5 >= self._sigma)
         self._max_snr = ((self._plot_lc - self._bg) * self._res / (self._bg * self._res)**0.5).max()
         self._aux_times = self._times[self._aux_index[0][0]:self._aux_index[0][-1]] # +1 in the index
@@ -340,36 +363,53 @@ class LC(object):
         self._get_lc_properties()
         
         
-    def hdf5_lc_generation(self, n_lcs, outfile, overwrite=False, start_seed=12345):
-
+    def hdf5_lc_generation(self, outfile, overwrite=False, seed=12345):
+        """
+        Generates a new avalanche and writes it to an hdf5 file
+        
+        :n_lcs: number of light curves we want to simulate
+        :outfile: file name
+        :overwrite: overwrite existing file
+        :seed: random seed for the avalanche generation, int or list
+        """
+        
         if overwrite == False:
             assert os.path.isfile(outfile), 'ERROR: file already exists!'
 
-        f = h5py.File(outfile, 'w')
+        self._f = h5py.File(outfile, 'w')
 
         
-        f.create_group('GRB_PARAMETERS')
-        f['GRB_PARAMETERS'].attrs['PARAMETER_ORDER'] = '[K, t_start, t_rise, t_decay]'
+        self._f.create_group('GRB_PARAMETERS')
+        self._f['GRB_PARAMETERS'].attrs['PARAMETER_ORDER'] = '[K, t_start, t_rise, t_decay]'
 
-        for i in range(n_lcs):
-
-            norms, t_delays, taus, tau_rs, peak_value = self.generate_avalanche(seed=start_seed+i, return_array=True)
+        self._grb_counter = 1
             
-            n_pulses = len(norms)
+        if isinstance(seed, list):
+            for sd in seed:
+                self.aux_hdf5(seed=sd)
+                
+        else:
+            self.aux_hdf5(seed=seed)
 
-            grb_array = np.concatenate((                                                                                                                                              
-                norms.reshape(n_pulses,1),                                                                                                                       
-                t_delays.reshape(n_pulses,1),                                                                                                                 
-                tau_rs.reshape(n_pulses,1),                                                                                                                  
-                taus.reshape(n_pulses,1)),                                                                                                                
-                axis=1                                                                                                                                             
-                )
-    
-            f.create_dataset('GRB_PARAMETERS/GRB_%i' % i, data=grb_array)
-            f['GRB_PARAMETERS/GRB_%i' % i].attrs['PEAK_VALUE'] = peak_value
-            f['GRB_PARAMETERS/GRB_%i' % i].attrs['N_PULSES'] = n_pulses
+        self._f.close()
+        
+        
+    def aux_hdf5(self, seed):
+        norms, t_delays, taus, tau_rs, peak_value = self.generate_avalanche(seed=seed, return_array=True)
+        n_pulses = norms.size
 
-        f.close()
+        grb_array = np.concatenate((
+                    norms.reshape(n_pulses,1),
+                    t_delays.reshape(n_pulses,1),
+                    tau_rs.reshape(n_pulses,1),
+                    taus.reshape(n_pulses,1)),
+                    axis=1
+                    )
+
+        self._f.create_dataset(f'GRB_PARAMETERS/GRB_{self._grb_counter}', data=grb_array)
+        self._f[f'GRB_PARAMETERS/GRB_{self._grb_counter}'].attrs['PEAK_VALUE'] = peak_value
+        self._f[f'GRB_PARAMETERS/GRB_{self._grb_counter}'].attrs['N_PULSES'] = n_pulses
+        self._grb_counter += 1
 
     
 class Restored_LC(LC):
