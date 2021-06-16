@@ -151,10 +151,10 @@ class LC(object):
 
         return self._rates
 
-
+    
     def plaw_inv_cdf(self, p, lc_max):
         """
-        Calculates scaling factor
+        Calculates scaling factor using inverse probability integral transform (Smirnov transform)
         :p: random number uniformely distributed in [0, 1)
         :lc_max: the maximum height of the light curve
         :returns: scale factor for the light curve
@@ -164,11 +164,15 @@ class LC(object):
         x_max = self._max_photon_rate / lc_max
         
         alpha = 1.5
-        A = (1. - alpha)/(np.power(x_max, 1.-alpha) - np.power(x_min, 1.-alpha))
+        index = 1.-alpha
+        
+        # normalization of a CDF for the PDF f(x) = x**(-alpha)
+        norm = index /(x_max**index - (x_min)**index)
     
-        return np.power(p*(1.-alpha)/A + np.power(x_min, 1.-alpha), 1./(1.-alpha))
-    
+        #inverse CDF function for PDF f(x) = x**(-alpha)
+        return (p*index/norm + x_min**index)**(1/index)
 
+                
     def generate_avalanche(self, seed=12345, return_array=False):
         """
         Generates an avalanche and the normalization for it from the logN-logS -3/2 law.
@@ -188,20 +192,21 @@ class LC(object):
                                                       delta1= self._delta1, 
                                                       delta2= self._delta2, 
                                                       mu= self._mu, 
-                                                      seed=seed
+                                                      seed=seed, 
+                                                      n_cut=self._n_cut
                                                      )
 
 
-        lc_max = compute_max_lightcurve(norms, t_delays, taus, tau_rs, res=self._res)
+        self._lc_max = compute_max_lightcurve(norms, t_delays, taus, tau_rs, res=self._res)
 
         # set seed for random draw(same one as the avalanche generation)
         np.random.seed(seed)
         # draw from uniform distribution
         p = np.random.uniform()
-        scale_factor = self.plaw_inv_cdf(p, lc_max)
+        self._scale_factor = self.plaw_inv_cdf(p, self._lc_max)
         # rescale the norms
-        norms = norms * scale_factor
-        peak_value = lc_max * scale_factor
+        norms = norms * self._scale_factor
+        self._peak_value = self._lc_max * self._scale_factor
         #raw_lc += self.norris_pulse(norm, t_delay, tau, tau_r)
         #cnt_flux_low = self._min_photon_rate / raw_lc.max()
         #cnt_flux_high = self._max_photon_rate / raw_lc.max()
@@ -213,7 +218,7 @@ class LC(object):
 
         if return_array:
 
-            return norms, t_delays, taus, tau_rs, peak_value
+            return norms, t_delays, taus, tau_rs, self._peak_value
 
         else:
         
@@ -575,8 +580,10 @@ def _isinstance(obj):
 
 
 @nb.njit(fastmath=True)
-def gen_avalanche(mu_0, tau_min, tau_max, alpha, resoltuion, delta1, delta2, mu, seed=12345):
+def gen_avalanche(mu_0, tau_min, tau_max, alpha, resoltuion, delta1, delta2, mu, seed, n_cut):
 
+    n_pulses = 0
+    
     # set seed for random number generation
     np.random.seed(seed)
     
@@ -593,7 +600,6 @@ def gen_avalanche(mu_0, tau_min, tau_max, alpha, resoltuion, delta1, delta2, mu,
 
     log_tau_min = np.log(tau_min)
     log_tau_max = np.log(tau_max)
-
     
     
     for i in range(mu_s):
@@ -615,9 +621,9 @@ def gen_avalanche(mu_0, tau_min, tau_max, alpha, resoltuion, delta1, delta2, mu,
         t_delays.append(t_delay)
         taus.append(tau0)
         tau_rs.append(tau_r)
-
         
-#         tau1 = tau_r
+        n_pulses += 1
+        
         tau1 = tau0
 
         t_shift = t_delay
@@ -644,7 +650,11 @@ def gen_avalanche(mu_0, tau_min, tau_max, alpha, resoltuion, delta1, delta2, mu,
                 taus.append(tau)
                 tau_rs.append(tau_r)
 
-#                 tau1 = tau_r
+                n_pulses += 1
+                
+                if n_cut is not None and n_pulses > n_cut:
+                    break   
+                
                 tau1 = tau
 
                 t_shift = delta_t
