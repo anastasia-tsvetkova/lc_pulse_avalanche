@@ -1,4 +1,5 @@
 import inspect
+import sys
 import math
 from math import exp, log
 import matplotlib.pyplot as plt
@@ -7,10 +8,23 @@ from numpy.random import exponential, lognormal, normal, uniform
 from scipy.stats import loguniform
 import os, h5py
 
+
 class LC(object):
     """
-    A class to generate gamma-ray burst light curves (GRB LCs) using a pulse avalance model ('chain reaction') 
-    proposed by Stern & Svensson, ApJ, 469: L109 (1996).
+    A class to generate gamma-ray burst light curves (GRB LCs) using a pulse 
+    avalanche model ('chain reaction') proposed by Stern & Svensson, ApJ, 469: L109 (1996).
+    The 7 free parameters of such model are:
+    - mu
+    - mu0
+    - alpha
+    - delta1
+    - delta2
+    - tau_min
+    - tau_max
+    Parameters of BATSE:
+    - res      = 0.064 [s]
+    - eff_area = 3600 [cm2]
+    - bg_level = 10.67 [cnt/cm2/s]
     
     :mu: average number of baby pulses
     :mu0: average number of spontaneous (initial) pulses
@@ -22,18 +36,20 @@ class LC(object):
     :tau_max: upper boundary of log-normal probability distribution of tau_0
     :t_min: GRB LC start time
     :t_max: GRB LC stop time
-    :res: GRB LC time resolution
+    :res: GRB LC time resolution (s)
     :eff_area: effective area of instrument (cm2)
-    :bg_level: backgrounf level (cnt/cm2/s)
-    :min_photon_rate: left boundary of -3/2 log N - log S distrubution (ph/cm2/s)
-    :max_photon_rate: right boundary of -3/2 log N - log S distrubution (ph/cm2/s)
+    :bg_level: background level (cnt/cm2/s)
+    :min_photon_rate: left boundary of -3/2 log N - log S distribution (ph/cm2/s)
+    :max_photon_rate: right boundary of -3/2 log N - log S distribution (ph/cm2/s)
     :sigma: signal above background level
     :n_cut: maximum number of pulses in avalanche (useful to speed up the simulations but in odds with the "classic" approach)
+    :with_bg: boolean flag for keeping or removing the background level at the end of the generation
+    :use_poisson: boolean flag for using the Poisson or the (rounded) exponential for sampling the number of initial pulses and childs
     """
     
     def __init__(self, mu=1.2, mu0=1, alpha=4, delta1=-0.5, delta2=0, tau_min=0.2, tau_max=26,
                  t_min=-10, t_max=1000, res=0.256, eff_area=3600, bg_level=10.67, min_photon_rate=1.3,
-                 max_photon_rate=1300, sigma=5, n_cut=None, verbose=False):
+                 max_photon_rate=1300, sigma=5, n_cut=None, with_bg=True, use_poisson=False, verbose=False):
         
         self._mu = mu # mu~1 => critical runaway regime
         self._mu0 = mu0 # average number of spontaneous pulses per GRB
@@ -50,9 +66,9 @@ class LC(object):
         self._max_photon_rate = max_photon_rate 
         self._verbose = verbose
         self._res = res # s
-        self._n = int(np.ceil((t_max - t_min)/self._res)) + 1
-        self._t_min = t_min
-        self._t_max = (self._n - 1) * self._res + self._t_min
+        self._n = int(np.ceil((t_max - t_min)/self._res)) + 1 # time steps
+        self._t_min = t_min # ms
+        self._t_max = (self._n - 1) * self._res + self._t_min # ms
         self._times, self._step = np.linspace(self._t_min, self._t_max, self._n, retstep=True)
         self._rates = np.zeros(len(self._times))
         self._sp_pulse = np.zeros(len(self._times))
@@ -61,14 +77,16 @@ class LC(object):
         self._sigma = sigma
         self._n_cut = n_cut
         self._n_pulses = 0
-        
+        self._with_bg = with_bg
+        self._use_poisson = use_poisson
+
         if self._verbose:
             print("Time resolution: ", self._step)
                 
      
     def norris_pulse(self, norm, tp, tau, tau_r):
         """
-        Computes a single pulse according to Norris te al., ApJ, 459, 393 (1996)
+        Computes a single pulse according to Norris et al., ApJ, 459, 393 (1996)
         
         :t: times (lc x-axis), vector
         :tp: pulse peak time, scalar
@@ -103,7 +121,15 @@ class LC(object):
         """
             
         # number of baby pulses: p2(mu_b) = exp(-mu_b/mu)/mu, mu - the average, mu_b - number of baby pulses
-        mu_b = round(exponential(scale=self._mu))
+        if self._use_poisson:
+            mu_b = poisson.rvs(mu=self._mu, 
+                               size=1, 
+                               random_state=None)
+            mu_b = mu_b[0]
+        else:
+            mu_b = round(exponential(scale=self._mu))
+
+
                 
         if self._verbose:
             print("Number of pulses:", mu_b)
@@ -163,8 +189,17 @@ class LC(object):
         """
    
         # number of spontaneous primary pulses: p5(mu_s) = exp(-mu_s/mu0)/mu0
-        mu_s = round(exponential(scale=self._mu0))
-        if mu_s == 0:  mu_s = 1 
+        if self._use_poisson:
+            mu_s = 0
+            while (mu_s==0):
+                mu_s = poisson.rvs(mu=self._mu0, 
+                                   size=1, 
+                                   random_state=None)
+                mu_s = mu_s[0]
+        else:
+            mu_s = round(exponential(scale=self._mu0))
+            if (mu_s==0):  
+                mu_s = 1 
             
         if self._verbose:
             print("Number of spontaneous pulses:", mu_s)
@@ -201,20 +236,33 @@ class LC(object):
         self._raw_lc = self._sp_pulse + self._rates
 
         self._max_raw_pcr = self._raw_lc.max()
+        #if (self._max_raw_pcr<1.e-12):
+        #    # check that we have generated a lc with non-zero values; otherwise exit
+        #    sys.exit()
+        #else:
+        #    pass
         population = np.geomspace(self._min_photon_rate , self._max_photon_rate, 1000)
         weights = list(map(lambda x: x**(-3/2), population))
         weights = weights / np.sum(weights)
         ampl = np.random.choice(population, p=weights) / self._max_raw_pcr
+        self._ampl = ampl
         
-        self._peak_value = self._max_raw_pcr * ampl
+        self._peak_value = self._max_raw_pcr * self._ampl
         
-#         lc from avalanche scaled + Poissonian bg added
-        self._plot_lc = self._raw_lc * ampl * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
+        # lc from avalanche scaled + Poissonian bg added
+        if self._with_bg: # with background
+            self._plot_lc = self._raw_lc * self._ampl * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
+            #self._err_lc  = np.sqrt(self._plot_lc)
+        else: # without background
+            self._plot_lc = self._raw_lc * self._ampl * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
+            #self._err_lc  = np.sqrt(self._plot_lc)
+            self._plot_lc = self._plot_lc - self._bg
+
 
         self._get_lc_properties()
         
         for p in self._lc_params:
-            p['norm'] *= ampl
+            p['norm'] *= self._ampl
         
         norms = np.empty((0,))
         t_delays = np.empty((0,))
@@ -358,7 +406,14 @@ class LC(object):
             tau_r = par['tau_r']
             self._raw_lc += self.norris_pulse(norm, t_delay, tau, tau_r) #
 
-        self._plot_lc =  self._raw_lc * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
+        if self._with_bg:
+            self._plot_lc = self._raw_lc * self._ampl * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
+            #self._plot_lc = self._raw_lc *             self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
+        else:
+            self._plot_lc = self._raw_lc * self._ampl * self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
+            #self._plot_lc = self._raw_lc *             self._eff_area + np.random.default_rng().poisson((self._bg), self._n)
+            self._plot_lc = self._plot_lc - self._bg
+
 
         self._get_lc_properties()
         
