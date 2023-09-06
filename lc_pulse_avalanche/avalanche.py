@@ -249,7 +249,6 @@ class LC(object):
         
         self._peak_value = self._max_raw_pcr * self._ampl
         
-
         # lc from avalanche scaled + Poissonian bg added
         # Here, contrary to what happens in the method `restore_lc()` and thus
         # in the method `plot_lc` of the object LC, the variable `_plot_lc`` 
